@@ -9,6 +9,11 @@ _This is a challenge as part of the Onaroll interview. This CLI communicates wit
 
 ## Quickstart
 
+_Install CLI requirements:_
+
+``` $: pip install -r requirements.txt ```
+
+
 _Create the initial database:_
 
 ``` $: python src/cli.py initdb ```
@@ -16,3 +21,12 @@ _Create the initial database:_
 _Run the CLI:_
 
 ``` $: python src/cli.py updatedb ```
+
+
+## Docker
+
+``` $: docker build -t redis-cli . ```
+
+``` $: docker run redis-cli python cli.py initdb ```
+
+``` $: docker run redis-cli python cli.py updatedb ```
