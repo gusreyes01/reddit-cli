@@ -75,7 +75,8 @@ def updatedb():
                         created_date=datetime.datetime.now(),
                         modified_date=datetime.datetime.now())
             post.save()
-            click.echo('Post with id {} added'.format(api_post_id))
+            click.echo('Post with id {} [{}] added'.format(
+                api_post_id, api_post_title))
 
 
 @click.command()
