@@ -1,17 +1,15 @@
-# set base image (host OS)
-FROM python:3.8
+FROM python:3.12-slim
 
-# set the working directory in the container
-WORKDIR /code
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-# copy the dependencies file to the working directory
+WORKDIR /app
 COPY requirements.txt .
+RUN python -m pip install --no-cache-dir --requirement requirements.txt \
+    && useradd --create-home --uid 10001 appuser
+COPY --chown=appuser:appuser src/ ./src/
+USER appuser
+WORKDIR /data
 
-# install dependencies
-RUN pip install -r requirements.txt
-
-# copy the content of the local src directory to the working directory
-COPY src/ .
-
-# command to run on container start
-CMD [ "python", "./cli.py" ]
+ENTRYPOINT ["python", "/app/src/cli.py"]
+CMD ["--help"]

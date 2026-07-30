@@ -1,32 +1,55 @@
-# Reddit-cli
+# Reddit CLI
 
-## Description
+A small, local command-line tracker for Reddit's public `/r/popular` feed.
+It records post rankings and votes in SQLite, then reports new posts, ranking
+changes, vote changes, and posts that leave the top 75.
 
-This CLI communicates with the public Reddit API, stores information about posts, and on subsequent executions can tell which posts are new, which posts have dropped off, and which had vote changes._
+No Reddit account or API credential is required. The tool stores only public
+post metadata.
 
-[https://www.reddit.com/r/popular.json](https://www.reddit.com/r/popular.json)
+## Requirements and setup
 
+- Python 3.12+
 
-## Quickstart
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+python -m pip install --requirement requirements.txt
+```
 
-_Install CLI requirements:_
+## Usage
 
-``` $: pip install -r requirements.txt ```
+```bash
+python src/cli.py initdb
+python src/cli.py updatedb
+python src/cli.py dropdb
+```
 
-
-_Create the initial database:_
-
-``` $: python src/cli.py initdb ```
-
-_Run the CLI:_
-
-``` $: python src/cli.py updatedb ```
-
+The database defaults to `reddit.db`. Select a different location with
+`--database PATH` or the `REDDIT_CLI_DATABASE` environment variable.
+Updates use explicit connection/read timeouts and one database transaction,
+so a failed fetch cannot leave a partial snapshot.
 
 ## Docker
 
-``` $: docker build -t redis-cli . ```
+The image runs as a non-root user and expects persistent data under `/data`.
 
-``` $: docker run redis-cli python cli.py initdb ```
+```bash
+docker build --tag reddit-cli .
+docker run --rm -v reddit-data:/data reddit-cli initdb
+docker run --rm -v reddit-data:/data reddit-cli updatedb
+```
 
-``` $: docker run redis-cli python cli.py updatedb ```
+## Quality checks
+
+```bash
+python -m pip install --requirement requirements-dev.txt
+ruff check .
+pytest
+pip check
+```
+
+GitHub Actions also builds the container on every push and pull request.
+Dependabot monitors Python, Docker, and workflow dependencies. See
+[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).

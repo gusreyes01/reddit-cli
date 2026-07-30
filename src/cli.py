@@ -1,94 +1,147 @@
-# cli.py
+from datetime import UTC, datetime
+from pathlib import Path
 
-import datetime
-from datetime import date
 import click
 import requests
-import peewee
 
-from data import Post
-from echo import echo_ranking, echo_votes
-
-db = peewee.SqliteDatabase('reddit.db')
-db.connect()
+from data import Post, configure_database, db
+from echo import echo_not_ranking, echo_ranking, echo_votes
 
 LIMIT = 75
-SOURCE_URL = 'https://www.reddit.com/r/popular.json?limit={}'.format(LIMIT)
+SOURCE_URL = f"https://www.reddit.com/r/popular.json?limit={LIMIT}"
+USER_AGENT = "reddit-cli/1.0 (educational post ranking tracker)"
 
 
 @click.group()
-def cli():
-    pass
+@click.option(
+    "--database",
+    envvar="REDDIT_CLI_DATABASE",
+    default="reddit.db",
+    show_default=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+)
+@click.pass_context
+def cli(ctx, database):
+    """Track ranking and vote changes in Reddit's public popular feed."""
+    database.parent.mkdir(parents=True, exist_ok=True)
+    configure_database(database)
+
+    def close_database():
+        if not db.is_closed():
+            db.close()
+
+    ctx.call_on_close(close_database)
 
 
-@click.command()
+@cli.command()
 def initdb():
-    # Creates a new database
-    db.create_tables([Post])
-    click.echo('Initialized the database')
+    """Create the local post database if it does not exist."""
+    db.create_tables([Post], safe=True)
+    click.echo("Initialized the database")
 
 
-@click.command()
-def updatedb():
-    # Checks for updates
-    api_posts = requests.get(SOURCE_URL, headers={
-        'User-agent': 'Robot 0.1'}).json()
-    for (ranking, api_post) in enumerate(api_posts['data']['children']):
+@cli.command()
+@click.option("--source-url", default=SOURCE_URL, hidden=True)
+def updatedb(source_url):
+    """Fetch Reddit's popular feed and atomically update tracked posts."""
+    db.create_tables([Post], safe=True)
+    try:
+        response = requests.get(
+            source_url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=(3.05, 15),
+        )
+        response.raise_for_status()
+        posts = parse_posts(response.json())
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        raise click.ClickException(f"could not fetch Reddit feed: {exc}") from exc
 
-        api_post_id = api_post['data']['id']
-        api_post_title = api_post['data']['title']
-        api_post_ups = api_post['data']['ups']
-        api_post_downs = api_post['data']['downs']
+    now = datetime.now(UTC)
+    seen = set()
+    events = []
+    with db.atomic():
+        for ranking, item in enumerate(posts):
+            seen.add(item["id"])
+            post = Post.get_or_none(Post.reddit_id == item["id"])
+            if post is None:
+                Post.create(
+                    reddit_id=item["id"],
+                    title=item["title"],
+                    ups=item["ups"],
+                    downs=item["downs"],
+                    ranking=ranking,
+                    created_date=now,
+                    modified_date=now,
+                )
+                events.append(("added", item["id"], item["title"]))
+                continue
 
-        db_posts = Post.select().where(Post.reddit_id == api_post_id)
-
-        if db_posts.exists():
-            for db_post in db_posts:
-                # Post exists, check if it's still ranking.
-                # Reddit uses hotness, we'll just fetch their ranking based on the reddit API order
-                # https://github.com/reddit-archive/reddit/blob/master/r2/r2/lib/db/_sorts.pyx#L44
-
-                delta_votes = api_post_ups - db_post.ups
-                delta_ranking = ranking - db_post.ranking
-
-                db_post.delta_votes = delta_votes
-                db_post.delta_ranking = delta_ranking
-                db_post.ranking = ranking
-                db_post.ups = api_post_ups
-                db_post.downs = api_post_downs
-                db_post.modified_date = datetime.datetime.now()
-
-                db_post.save()
-
-                echo_ranking(api_post_id, delta_ranking, LIMIT)
-                echo_votes(api_post_id, delta_votes)
-
-        else:
-            # New Post, save it
-            post = Post(reddit_id=api_post_id,
-                        title=api_post_title,
-                        ups=api_post_ups,
-                        downs=api_post_downs,
-                        ranking=ranking,
-                        delta_votes=0,
-                        delta_ranking=0,
-                        created_date=datetime.datetime.now(),
-                        modified_date=datetime.datetime.now())
+            delta_votes = item["ups"] - post.ups
+            delta_ranking = ranking - post.ranking
+            post.title = item["title"]
+            post.ups = item["ups"]
+            post.downs = item["downs"]
+            post.ranking = ranking
+            post.delta_votes = delta_votes
+            post.delta_ranking = delta_ranking
+            post.modified_date = now
             post.save()
-            click.echo('Post with id {} [{}] added'.format(
-                api_post_id, api_post_title))
+            events.append(("ranking", item["id"], delta_ranking))
+            events.append(("votes", item["id"], delta_votes))
+
+        dropped = Post.select().where((Post.ranking < LIMIT) & Post.reddit_id.not_in(seen))
+        for post in dropped:
+            post.delta_ranking = LIMIT - post.ranking
+            post.ranking = LIMIT
+            post.modified_date = now
+            post.save()
+            events.append(("dropped", post.reddit_id))
+
+    for kind, *args in events:
+        if kind == "added":
+            click.echo(f"Post {args[0]} [{args[1]}] added")
+        elif kind == "ranking":
+            echo_ranking(args[0], args[1], LIMIT)
+        elif kind == "votes":
+            echo_votes(args[0], args[1])
+        else:
+            echo_not_ranking(args[0], LIMIT)
+    click.echo(f"Updated {len(posts)} posts")
 
 
-@click.command()
+@cli.command()
+@click.confirmation_option(prompt="Delete the local Reddit database?")
 def dropdb():
-    # WARNING - This command fully deletes the database
-    db.drop_tables([Post])
-    click.echo('Dropped the database')
+    """Permanently remove all locally tracked posts."""
+    db.drop_tables([Post], safe=True)
+    click.echo("Dropped the database")
 
 
-cli.add_command(initdb)
-cli.add_command(updatedb)
-cli.add_command(dropdb)
+def parse_posts(payload):
+    children = payload["data"]["children"]
+    if not isinstance(children, list):
+        raise ValueError("feed children must be a list")
+
+    posts = []
+    for child in children:
+        item = child["data"]
+        post_id = item["id"]
+        title = item["title"]
+        ups = item["ups"]
+        downs = item.get("downs", 0)
+        if (
+            not isinstance(post_id, str)
+            or not post_id
+            or not isinstance(title, str)
+            or not isinstance(ups, int)
+            or ups < 0
+            or not isinstance(downs, int)
+            or downs < 0
+        ):
+            raise ValueError("feed contains an invalid post")
+        posts.append({"id": post_id, "title": title, "ups": ups, "downs": downs})
+    return posts
+
 
 if __name__ == "__main__":
     cli()

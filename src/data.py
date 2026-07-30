@@ -1,18 +1,31 @@
-from peewee import *
+from peewee import (
+    CharField,
+    DateTimeField,
+    IntegerField,
+    Model,
+    SqliteDatabase,
+)
 
-db = SqliteDatabase('reddit.db')
+db = SqliteDatabase(None)
+
+
+def configure_database(path):
+    if not db.is_closed():
+        db.close()
+    db.init(path, pragmas={"foreign_keys": 1, "journal_mode": "wal"})
+    db.connect(reuse_if_open=True)
 
 
 class Post(Model):
-    reddit_id = CharField()
+    reddit_id = CharField(unique=True, index=True)
     title = CharField()
     ups = IntegerField()
     downs = IntegerField()
     ranking = IntegerField()
-    delta_votes = IntegerField()
-    delta_ranking = IntegerField()
-    created_date = DateField()
-    modified_date = DateField()
+    delta_votes = IntegerField(default=0)
+    delta_ranking = IntegerField(default=0)
+    created_date = DateTimeField()
+    modified_date = DateTimeField()
 
     class Meta:
-        database = db  # This model uses the "posts.db" database.
+        database = db
